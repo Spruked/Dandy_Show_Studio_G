@@ -63,6 +63,31 @@ def ffmpeg(*args):
     p=subprocess.run(['ffmpeg','-hide_banner','-loglevel','error','-y',*map(str,args)],capture_output=True,text=True)
     if p.returncode:raise HTTPException(502,p.stderr[-1500:])
 
+def ocr_status():
+    try:
+        import pytesseract
+        executable=shutil.which('tesseract') or pytesseract.pytesseract.tesseract_cmd
+        return {'available':bool(executable and Path(executable).exists()),'executable':executable or None}
+    except ImportError:
+        return {'available':False,'executable':None}
+
+def extract_image_text(img):
+    try:
+        import pytesseract
+    except ImportError as exc:
+        raise RuntimeError('Local OCR is unavailable: install pytesseract and the Tesseract executable.') from exc
+    status=ocr_status()
+    if not status['available']:
+        raise RuntimeError('Tesseract OCR is not installed or not on PATH. Install Tesseract and restart the backend.')
+    from PIL import ImageOps, ImageFilter
+    prepared=ImageOps.exif_transpose(img).convert('RGB')
+    text=pytesseract.image_to_string(prepared,config='--psm 6').strip()
+    if len(text)<12:
+        gray=ImageOps.autocontrast(ImageOps.grayscale(prepared)).filter(ImageFilter.SHARPEN)
+        fallback=pytesseract.image_to_string(gray,config='--psm 6').strip()
+        if len(fallback)>len(text):text=fallback
+    return text
+
 def probe_duration(path):
     if not shutil.which('ffprobe'):raise HTTPException(503,'ffprobe required')
     p=subprocess.run(['ffprobe','-v','error','-show_entries','format=duration','-of','default=noprint_wrappers=1:nokey=1',str(path)],capture_output=True,text=True)
@@ -71,7 +96,7 @@ def probe_duration(path):
 
 @app.get('/health')
 def health():
-    return {'ok':True,'ffmpeg':bool(shutil.which('ffmpeg')),'nemotron_configured':bool(os.getenv('NVIDIA_API_KEY')),'voicestudio_configured':bool(os.getenv('VOICESTUDIO_URL'))}
+    return {'ok':True,'ffmpeg':bool(shutil.which('ffmpeg')),'tesseract':ocr_status()['available'],'nemotron_configured':bool(os.getenv('NVIDIA_API_KEY')),'voicestudio_configured':bool(os.getenv('VOICESTUDIO_URL'))}
 
 @app.post('/sources')
 async def add_source(source:Source):
@@ -117,16 +142,26 @@ async def upload_source(file:UploadFile=File(...)):
         elif ext=='.pptx':
             from pptx import Presentation
             text='\n'.join(shape.text for slide in Presentation(io.BytesIO(raw)).slides for shape in slide.shapes if shape.has_text_frame)
-        elif ext in ('.png','.jpg','.jpeg','.webp'):
+        elif ext in ('.png','.jpg','.jpeg','.tiff','.tif','.bmp'):
             from PIL import Image
-            img=Image.open(io.BytesIO(raw));img.verify()
-            if not os.getenv('NVIDIA_API_KEY') or not os.getenv('NEMOTRON_VISION_MODEL'):
-                raise HTTPException(503,'Image analysis requires NVIDIA_API_KEY and NEMOTRON_VISION_MODEL')
-            mime='image/png' if ext=='.png' else 'image/webp' if ext=='.webp' else 'image/jpeg'
-            description=await llm([{'role':'system','content':'Describe this image accurately for source-grounded podcast research. Extract visible text, distinguish observations from interpretation, do not invent.'},{'role':'user','content':[{'type':'text','text':'Describe this image for a podcast production research library.'},{'type':'image_url','image_url':{'url':f'data:{mime};base64,{base64.b64encode(raw).decode()}'}}]}],1200,model=os.getenv('NEMOTRON_VISION_MODEL'))
-            rid=record('sources',{'label':name,'text':description,'image':True,'status':'analyzed'})
+            img=Image.open(io.BytesIO(raw));img.load()
+            ocr_warning=None
+            try:ocr_text=extract_image_text(img)
+            except RuntimeError as exc:ocr_text='';ocr_warning=str(exc)
+            vision_text=''
+            if os.getenv('NVIDIA_API_KEY') and os.getenv('NEMOTRON_VISION_MODEL'):
+                mime='image/png' if ext=='.png' else 'image/bmp' if ext=='.bmp' else 'image/tiff' if ext in ('.tiff','.tif') else 'image/jpeg'
+                vision_text=await llm([{'role':'system','content':'Describe this image accurately for source-grounded podcast research. Focus on visual information beyond transcribed text. Distinguish observations from interpretation, do not invent.'},{'role':'user','content':[{'type':'text','text':'Describe the visual content of this image for a podcast production research library. Avoid repeating visible text unless needed for meaning.'},{'type':'image_url','image_url':{'url':f'data:{mime};base64,{base64.b64encode(raw).decode()}'}}]}],1200,model=os.getenv('NEMOTRON_VISION_MODEL'))
+            if not ocr_text and not vision_text:raise HTTPException(503,ocr_warning or 'Image contains no readable text and vision analysis is not configured')
+            pieces=[]
+            if ocr_text:pieces.append('LOCAL OCR (unverified transcription):\n'+ocr_text)
+            if vision_text:pieces.append('VISION NOTES (unverified visual description):\n'+vision_text)
+            combined='\n\n'.join(pieces)
+            rid=record('sources',{'label':name,'text':combined,'image':True,'status':'analyzed','ocr':ocr_text,'vision':vision_text,'ocr_warning':ocr_warning})
             (ROOT/'sources'/rid/name).write_bytes(raw)
-            return {'id':rid,'label':name,'characters':len(description),'status':'analyzed'}
+            result={'id':rid,'label':name,'characters':len(combined),'status':'analyzed','ocr_characters':len(ocr_text),'vision_available':bool(vision_text)}
+            if ocr_warning:result['ocr_warning']=ocr_warning
+            return result
         else:raise HTTPException(415,'Unsupported file type')
     except HTTPException:raise
     except Exception as exc:raise HTTPException(422,f'Could not parse file: {exc}')

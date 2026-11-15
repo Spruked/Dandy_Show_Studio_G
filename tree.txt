@@ -1,0 +1,27 @@
+podcast_ studio_G/
+|-- HANDOFF.md
+|-- tree.txt
+|-- .gitignore
+`-- podcast_studio/
+    |-- README.md
+    |-- .env.example
+    |-- setup-windows.ps1
+    |-- start-windows.ps1
+    |-- backend/
+    |   |-- app.py
+    |   `-- requirements.txt
+    |-- frontend/
+    |   |-- index.html
+    |   |-- package.json
+    |   |-- package-lock.json
+    |   |-- tsconfig.json
+    |   |-- src/
+    |   |   |-- main.tsx
+    |   |   `-- style.css
+    |   `-- src-tauri/
+    |       |-- Cargo.toml
+    |       |-- build.rs
+    |       |-- tauri.conf.json
+    |       `-- src/main.rs
+    `-- tests/
+        `-- test_api.py

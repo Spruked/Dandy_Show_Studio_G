@@ -10,10 +10,12 @@ A native Tauri 2 / Rust / React interface backed by local FastAPI, NVIDIA Nemotr
 - Ad Studio: generate, edit, synthesize and download reusable commercials independently of episodes. Opening, two midrolls and closing slots can be replaced and the episode remixed without re-rendering dialogue.
 - Exports: finished MP3, branded static-cover vertical MP4, 9:16 social clips, episode script, approximate dialogue SRT, and AI-written social copy.
 - Health: connection reporting for VoiceStudio, Orbot, Nemotron configuration, and FFmpeg.
+- Local OCR: PNG, JPG/JPEG, TIFF and BMP uploads are transcribed with CPU-only `pytesseract` when the Windows Tesseract executable is installed; original images are retained and OCR is marked as unverified.
 
 ## Installation (Windows)
 
 1. Install Python 3.11+, Node.js 20+, Rust, Microsoft C++ Build Tools, WebView2, and FFmpeg/ffprobe on PATH.
+   Install the maintained Python wrapper with `pip install -r backend/requirements.txt`, and install the Windows Tesseract OCR executable separately. Verify both with `python -c "import pytesseract; print(pytesseract.get_tesseract_version())"` and `tesseract --version`. If Tesseract is installed outside PATH, set `pytesseract.pytesseract.tesseract_cmd` in the backend environment before starting the API.
 2. Open PowerShell in this folder and run `./setup-windows.ps1` once.
 3. Set `NVIDIA_API_KEY` and `NEMOTRON_MODEL` in the backend environment (or a local `.env` not committed to source control). Do not put the API key in React or distribute it in the ZIP.
 4. Start VoiceStudio at `http://127.0.0.1:3900`. Its actual model and request payload may differ from the default OpenAI-compatible speech format in `.env.example`; update `VOICESTUDIO_PAYLOAD_JSON` to match the service.

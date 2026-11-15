@@ -1,4 +1,4 @@
-import os, sys, tempfile, importlib
+import os, sys, tempfile, importlib, io
 from pathlib import Path
 from fastapi.testclient import TestClient
 
@@ -10,7 +10,17 @@ def setup_module():
     client=TestClient(api.app)
 
 def test_health():
-    r=client.get('/health');assert r.status_code==200;assert 'ffmpeg' in r.json()
+    r=client.get('/health');assert r.status_code==200;assert 'ffmpeg' in r.json();assert 'tesseract' in r.json()
+
+def test_image_ocr_reaches_source_context(monkeypatch):
+    from PIL import Image, ImageDraw
+    image=Image.new('RGB',(500,120),'white');ImageDraw.Draw(image).text((20,35),'DANDY OCR TEST',fill='black')
+    data=io.BytesIO();image.save(data,format='PNG')
+    monkeypatch.setattr(api,'extract_image_text',lambda img:'DANDY OCR TEST')
+    r=client.post('/sources/upload',files={'file':('test.png',data.getvalue(),'image/png')})
+    assert r.status_code==200 and r.json()['ocr_characters']>0
+    source=api.load('sources',r.json()['id'])
+    assert 'LOCAL OCR' in source['text']
 
 def test_sources_and_listing():
     r=client.post('/sources',json={'text':'Source grounded research material. '*10});assert r.status_code==200
