@@ -215,8 +215,7 @@ async def synth(text,voice,dest):
     Configure the request shape using VOICESTUDIO_PAYLOAD_JSON, e.g.
     {"text":"{text}","speaker":"{voice}","format":"wav"}.
     """
-    base=os.getenv('VOICESTUDIO_URL')
-    if not base:raise HTTPException(503,'Set VOICESTUDIO_URL')
+    base=os.getenv('VOICESTUDIO_URL','http://127.0.0.1:3900')
     endpoint=os.getenv('VOICESTUDIO_ENDPOINT','/v1/audio/speech')
     try: template=json.loads(os.getenv('VOICESTUDIO_PAYLOAD_JSON','{"input":"{text}","voice":"{voice}","model":"tts-1","response_format":"wav"}'))
     except ValueError:raise HTTPException(500,'Invalid VOICESTUDIO_PAYLOAD_JSON')
@@ -225,23 +224,35 @@ async def synth(text,voice,dest):
         if isinstance(obj,dict):return {k:replace(v) for k,v in obj.items()}
         if isinstance(obj,list):return [replace(v) for v in obj]
         return obj
-    async with httpx.AsyncClient(timeout=240) as client:
-        r=await client.post(base.rstrip('/')+'/'+endpoint.lstrip('/'),json=replace(template))
-        if r.status_code>=400:raise HTTPException(502,f'VoiceStudio error: {r.status_code}: {r.text[:350]}')
-        if r.headers.get('content-type','').startswith('audio/'):
-            dest.write_bytes(r.content)
-        else:
-            try: result=r.json()
-            except ValueError:raise HTTPException(502,'VoiceStudio returned neither audio nor JSON')
-            encoded=result.get('audio_base64') or result.get('audio')
-            if isinstance(encoded,str) and len(encoded)>100:
-                dest.write_bytes(base64.b64decode(encoded.split(',')[-1]))
-            elif result.get('audio_url'):
-                audio_url=result['audio_url']
-                if not audio_url.startswith(base.rstrip('/')+'/'):
-                    raise HTTPException(502,'VoiceStudio audio URL must be on configured server')
-                ar=await client.get(audio_url);ar.raise_for_status();dest.write_bytes(ar.content)
-            else:raise HTTPException(502,'VoiceStudio response lacks audio bytes/audio_base64/audio_url')
+    request_error=None
+    for attempt in range(3):
+      try:
+        async with httpx.AsyncClient(timeout=240) as client:
+          r=await client.post(base.rstrip('/')+'/'+endpoint.lstrip('/'),json=replace(template))
+          if r.status_code>=500 and attempt<2:
+              await asyncio.sleep(0.75*(attempt+1));continue
+          if r.status_code>=400:raise HTTPException(502,f'VoiceStudio error: {r.status_code}: {r.text[:350]}')
+          if r.headers.get('content-type','').startswith('audio/'):
+              dest.write_bytes(r.content)
+          else:
+              try: result=r.json()
+              except ValueError:raise HTTPException(502,'VoiceStudio returned neither audio nor JSON')
+              encoded=result.get('audio_base64') or result.get('audio')
+              if isinstance(encoded,str) and len(encoded)>100:
+                  dest.write_bytes(base64.b64decode(encoded.split(',')[-1]))
+              elif result.get('audio_url'):
+                  audio_url=result['audio_url']
+                  if not audio_url.startswith(base.rstrip('/')+'/'):
+                      raise HTTPException(502,'VoiceStudio audio URL must be on configured server')
+                  ar=await client.get(audio_url);ar.raise_for_status();dest.write_bytes(ar.content)
+              else:raise HTTPException(502,'VoiceStudio response lacks audio bytes/audio_base64/audio_url')
+          request_error=None
+          break
+      except HTTPException:raise
+      except (httpx.HTTPError,TimeoutError) as exc:
+          request_error=exc
+          if attempt<2:await asyncio.sleep(0.75*(attempt+1))
+    if request_error:raise HTTPException(502,f'VoiceStudio connection failed after retries: {request_error}')
     if not dest.exists() or dest.stat().st_size<100:raise HTTPException(502,'VoiceStudio returned empty audio')
 
 @app.post('/ads/{rid}/render')
@@ -420,7 +431,20 @@ async def import_voice(file:UploadFile=File(...),name:str=''):
         src.unlink(missing_ok=True);normalized.unlink(missing_ok=True);raise
     if normalized.stat().st_size<200:raise HTTPException(422,'Invalid voice sample')
     if src!=normalized:src.unlink(missing_ok=True)
-    manifest=voice_manifest();manifest['voices'].append({'id':vid,'name':name.strip() or Path(file.filename or 'Voice').stem,'sample':f'samples/{vid}.wav','studio_voice_id':'','created':datetime.now(timezone.utc).isoformat()});write_manifest(manifest)
+    voice_name=name.strip() or Path(file.filename or 'Voice').stem
+    studio_voice_id=''
+    if os.getenv('VOICESTUDIO_REGISTER_PROFILES','true').lower() not in ('0','false','no'):
+        base=os.getenv('VOICESTUDIO_URL','http://127.0.0.1:3900').rstrip('/')
+        try:
+            async with httpx.AsyncClient(timeout=120) as client:
+                with normalized.open('rb') as audio:
+                    response=await client.post(base+'/profiles',files={'ref_audio':(normalized.name,audio,'audio/wav')},data={'name':voice_name,'kind':'clone','language':'Auto'})
+                if response.status_code>=400:raise HTTPException(502,f'VoiceStudio profile registration failed: {response.status_code}: {response.text[:350]}')
+                profile=response.json();studio_voice_id=str(profile.get('id') or profile.get('profile_id') or '')
+                if not studio_voice_id:raise HTTPException(502,'VoiceStudio profile registration returned no profile ID')
+        except HTTPException:raise
+        except httpx.HTTPError as exc:raise HTTPException(502,f'VoiceStudio profile registration failed: {exc}')
+    manifest=voice_manifest();manifest['voices'].append({'id':vid,'name':voice_name,'sample':f'samples/{vid}.wav','studio_voice_id':studio_voice_id,'created':datetime.now(timezone.utc).isoformat()});write_manifest(manifest)
     return {'id':vid,'name':manifest['voices'][-1]['name']}
 
 @app.get('/voices/{vid}/sample')
