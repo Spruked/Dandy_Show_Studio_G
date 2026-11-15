@@ -134,7 +134,7 @@ async def upload_source(file:UploadFile=File(...)):
     return {'id':rid,'label':name,'characters':len(text)}
 
 async def llm(messages,max_tokens=5000,model=None):
-    key=os.getenv('NVIDIA_API_KEY');model=model or os.getenv('NEMOTRON_MODEL')
+    key=(os.getenv('NVIDIA_API_KEY') or '').strip();model=(model or os.getenv('NEMOTRON_MODEL') or '').strip()
     if not key or not model:raise HTTPException(503,'Set NVIDIA_API_KEY and NEMOTRON_MODEL')
     async with httpx.AsyncClient(timeout=180) as client:
         r=await client.post(os.getenv('NVIDIA_BASE_URL','https://integrate.api.nvidia.com/v1').rstrip('/')+'/chat/completions',headers={'Authorization':f'Bearer {key}'},json={'model':model,'messages':messages,'max_tokens':max_tokens,'temperature':0.6})
