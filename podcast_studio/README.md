@@ -1,6 +1,6 @@
 # The Dandy Show Studio — desktop production source
 
-A native Tauri 2 / Rust / React interface backed by local FastAPI, NVIDIA Nemotron, VoiceStudio and FFmpeg. The normal Windows entrypoint is `start-windows.ps1`, which launches the API and Tauri desktop window. The app does not require a browser to use its interface.
+A native Tauri 2 / Rust / React desktop application backed by local FastAPI, NVIDIA Nemotron, VoiceStudio and FFmpeg. The normal Windows entrypoint is `start-windows.ps1`, which launches the API and Tauri desktop window. A browser is not the product runtime.
 
 ## What's implemented
 
@@ -21,9 +21,9 @@ A native Tauri 2 / Rust / React interface backed by local FastAPI, NVIDIA Nemotr
 4. Start VoiceStudio at `http://127.0.0.1:3900`. Its actual model and request payload may differ from the default OpenAI-compatible speech format in `.env.example`; update `VOICESTUDIO_PAYLOAD_JSON` to match the service.
 5. Run `./start-windows.ps1` to start FastAPI and launch the Tauri desktop window.
 
-### Local development fallback
+### Optional development fallback (not the product runtime)
 
-If Rust/Cargo is not installed, start the services separately:
+Only for troubleshooting frontend/API work, if Rust/Cargo is not installed, the services can be started separately:
 
 ```powershell
 .\.venv\Scripts\python.exe -m uvicorn app:app --app-dir backend --host 127.0.0.1 --port 8765
@@ -31,7 +31,7 @@ cd frontend
 npm run dev -- --host 127.0.0.1
 ```
 
-Then open `http://127.0.0.1:5173`; the API is available at `http://127.0.0.1:8765`. The native Tauri window requires Cargo and the Windows desktop toolchain.
+This exposes a temporary Vite browser preview at `http://127.0.0.1:5173`; the API is available at `http://127.0.0.1:8765`. It does not replace the Tauri application. The supported user experience is the native Tauri window and requires Cargo plus the Windows desktop toolchain.
 
 ## VoiceStudio handoff
 
