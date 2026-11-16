@@ -485,8 +485,11 @@ async def import_voice(file:UploadFile=File(...),name:str=''):
 @app.get('/voices/{vid}/sample')
 def sample_voice(vid:str):
     manifest=voice_manifest()
-    if not any(v['id']==vid for v in manifest['voices']):raise HTTPException(404,'Voice not found')
-    return FileResponse(VOICE_DIR/'samples'/(vid+'.wav'),media_type='audio/wav')
+    voice=next((v for v in manifest['voices'] if v['id']==vid),None)
+    if not voice:raise HTTPException(404,'Voice not found')
+    sample=voice.get('sample')
+    if not sample:raise HTTPException(404,'No reference sample for this VoiceStudio voice')
+    return FileResponse(VOICE_DIR/sample,media_type='audio/wav')
 
 class VoiceAssignment(BaseModel):
     host:str
@@ -515,7 +518,8 @@ def voice_handoff(vid:str):
     manifest=voice_manifest();voice=next((v for v in manifest['voices'] if v['id']==vid),None)
     if not voice:raise HTTPException(404,'Voice not found')
     # Manifest is a local contract; no claim that VoiceStudio supports importing references.
-    return {'name':voice['name'],'studio_voice_id':voice['studio_voice_id'],'sample_path':str((VOICE_DIR/voice['sample']).resolve()),'sample_url':f'/voices/{vid}/sample','assigned_hosts':[h for h,v in manifest['hosts'].items() if v==vid]}
+    sample_path=str((VOICE_DIR/voice['sample']).resolve()) if voice.get('sample') else None
+    return {'name':voice['name'],'studio_voice_id':voice['studio_voice_id'],'sample_path':sample_path,'sample_url':f'/voices/{vid}/sample' if voice.get('sample') else None,'assigned_hosts':[h for h,v in manifest['hosts'].items() if v==vid]}
 
 class VoicePreview(BaseModel):
     text:str=Field(min_length=1,max_length=500)
