@@ -26,6 +26,7 @@ podcast_ studio_G/
     |       |-- Cargo.toml
     |       |-- build.rs
     |       |-- tauri.conf.json
+    |       |-- icons/icon.svg, icon.ico and generated sizes
     |       `-- src/main.rs
     `-- tests/
         `-- test_api.py
