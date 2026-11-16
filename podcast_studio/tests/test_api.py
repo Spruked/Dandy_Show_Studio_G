@@ -42,6 +42,21 @@ def test_missing_credentials():
     r=client.post('/episodes',json={'title':'Test','source_ids':[]})
     assert r.status_code==503
 
+def test_llm_rejects_empty_message_content(monkeypatch):
+    monkeypatch.setenv('NVIDIA_API_KEY','test-key')
+    class Response:
+        status_code=200
+        def json(self): return {'choices':[{'finish_reason':'length','message':{'content':None}}]}
+    class Client:
+        async def __aenter__(self): return self
+        async def __aexit__(self,*args): pass
+        async def post(self,*args,**kwargs): return Response()
+    monkeypatch.setattr(api.httpx,'AsyncClient',lambda *args,**kwargs: Client())
+    import asyncio
+    try: asyncio.run(api.llm([{'role':'user','content':'test'}],8,model='test-model'))
+    except api.HTTPException as exc: assert exc.status_code==502 and 'no message content' in exc.detail
+    else: assert False,'Expected empty model content to be rejected'
+
 def test_voice_library_manifest_and_assignment():
     manifest=client.get('/voices').json()
     assert 'voices' in manifest and 'hosts' in manifest

@@ -1,5 +1,5 @@
 """Podcast Studio API. Local-only, filesystem-persisted, no placeholder success responses."""
-import os, json, uuid, shutil, subprocess, re, io, base64, asyncio, hashlib, wave, ipaddress, socket
+import os, json, uuid, shutil, subprocess, re, io, base64, asyncio, hashlib, wave, ipaddress, socket, logging, time
 from pathlib import Path
 from urllib.parse import urlparse
 import httpx
@@ -12,6 +12,12 @@ from fastapi.middleware.cors import CORSMiddleware
 ROOT=Path(os.environ.get('PODCAST_STUDIO_DATA',str(Path.home()/'PodcastStudio')))
 DEFAULT_NEMOTRON_MODEL='nvidia/nemotron-3-nano-omni-30b-a3b-reasoning'
 ROOT.mkdir(parents=True,exist_ok=True)
+LOG_DIR=ROOT/'logs';LOG_DIR.mkdir(parents=True,exist_ok=True)
+logger=logging.getLogger('podcast_studio')
+if not logger.handlers:
+    handler=logging.FileHandler(LOG_DIR/'backend.log',encoding='utf-8')
+    handler.setFormatter(logging.Formatter('%(asctime)s %(levelname)s %(message)s'))
+    logger.addHandler(handler);logger.setLevel(logging.INFO);logger.propagate=False
 app=FastAPI(title='Podcast Studio',version='0.3')
 app.add_middleware(CORSMiddleware,allow_origins=['http://127.0.0.1:5173','http://localhost:5173','tauri://localhost','http://tauri.localhost'],allow_methods=['*'],allow_headers=['*'])
 
@@ -175,26 +181,49 @@ async def llm(messages,max_tokens=5000,model=None):
     async with httpx.AsyncClient(timeout=180) as client:
         r=await client.post(os.getenv('NVIDIA_BASE_URL','https://integrate.api.nvidia.com/v1').rstrip('/')+'/chat/completions',headers={'Authorization':f'Bearer {key}'},json={'model':model,'messages':messages,'max_tokens':max_tokens,'temperature':0.6})
         if r.status_code>=400:raise HTTPException(502,f'Nemotron error {r.status_code}: {r.text[:500]}')
-        return r.json()['choices'][0]['message']['content']
+        payload=r.json();choice=(payload.get('choices') or [{}])[0];message=choice.get('message') or {};content=message.get('content')
+        logger.info('nemotron_response status=%s finish_reason=%s has_content=%s response_keys=%s',r.status_code,choice.get('finish_reason'),bool(content),sorted(payload.keys()))
+        if not isinstance(content,str) or not content.strip():
+            raise HTTPException(502,'Nemotron returned no message content')
+        return content
 
 @app.post('/episodes')
 async def create_episode(req:Generate):
-    sources=[load('sources',x) for x in req.source_ids]
-    if any(not x.get('text') for x in sources):raise HTTPException(422,'Image sources require a vision adapter before script generation')
-    context='\n\n'.join(f'SOURCE {i+1}: {x["label"]}\n{x["text"][:20000]}' for i,x in enumerate(sources))[:65000]
-    outline=await llm([{'role':'system','content':'You are an expert investigative podcast producer. Plan a compelling multi-chapter episode grounded only in provided sources. Include tension, critical questions, clear narrative arc, and fact-check cautions. Return JSON object with chapters array of {title,goal,beats}, no markdown.'},{'role':'user','content':f'Title: {req.title}; duration {req.minutes} minutes; hosts {req.hosts}; direction {req.editorial_direction}\n{context}'}],3500)
-    script=await llm([{'role':'system','content':f'Write a finished two-host podcast dialogue, with distinct recurring personalities and natural objections, interruptions, callbacks and transitions. Hosts: {req.hosts}. Target {req.minutes*125} spoken words. Use only supplied facts, qualify uncertain claims. Return JSON object with segments array, each {{"speaker":host_name,"text":spoken_dialogue,"chapter":chapter_title}}. No markdown or production directions inside spoken text.'},{'role':'user','content':f'Outline:\n{outline}\nSources:\n{context}\nDirection:\n{req.editorial_direction}'}],max(5000,min(14000,req.minutes*550)))
+    request_id=str(uuid.uuid4());stage='start';started=time.perf_counter()
+    def mark(name,**details):
+        nonlocal stage
+        stage=name;elapsed=round(time.perf_counter()-started,3)
+        logger.info('episode_request=%s stage=%s elapsed_seconds=%s details=%s',request_id,name,elapsed,json.dumps(details,separators=(',',':'),default=str))
     try:
-        data=json.loads(re.sub(r'^```(?:json)?\s*|\s*```$','',script.strip()))
-        if not isinstance(data.get('segments'),list) or not data['segments']:raise ValueError('No segments')
-        for s in data['segments']:
-            if s.get('speaker') not in req.hosts or not s.get('text'):raise ValueError('Invalid speaker or dialogue')
-    except Exception as exc:raise HTTPException(502,f'Nemotron returned invalid episode JSON: {exc}; raw excerpt {script[:300]}')
-    spoken_words=sum(len(seg['text'].split()) for seg in data['segments'])
-    if spoken_words<req.minutes*65:
-        raise HTTPException(502,f'Generated script too short: {spoken_words} words for {req.minutes} minutes. Try a shorter episode or larger model output limit.')
-    rid=record('episodes',{'title':req.title,'outline':outline,'segments':data['segments'],'slots':Slot().model_dump(),'status':'script_ready','source_ids':req.source_ids,'word_count':spoken_words,'target_minutes':req.minutes})
-    return {'id':rid,'segments':len(data['segments']),'status':'script_ready'}
+        mark('load_sources',source_count=len(req.source_ids))
+        sources=[load('sources',x) for x in req.source_ids]
+        if any(not x.get('text') for x in sources):raise HTTPException(422,'Image sources require a vision adapter before script generation')
+        context='\n\n'.join(f'SOURCE {i+1}: {x["label"]}\n{x["text"][:20000]}' for i,x in enumerate(sources))[:65000]
+        mark('outline_start',context_characters=len(context),model=os.getenv('NEMOTRON_MODEL') or DEFAULT_NEMOTRON_MODEL)
+        outline=await llm([{'role':'system','content':'You are an expert investigative podcast producer. Plan a compelling multi-chapter episode grounded only in provided sources. Include tension, critical questions, clear narrative arc, and fact-check cautions. Return JSON object with chapters array of {title,goal,beats}, no markdown.'},{'role':'user','content':f'Title: {req.title}; duration {req.minutes} minutes; hosts {req.hosts}; direction {req.editorial_direction}\n{context}'}],3500)
+        mark('outline_complete',output_characters=len(outline))
+        dialogue_tokens=max(5000,min(14000,req.minutes*550))
+        mark('dialogue_start',max_tokens=dialogue_tokens)
+        script=await llm([{'role':'system','content':f'Write a finished two-host podcast dialogue, with distinct recurring personalities and natural objections, interruptions, callbacks and transitions. Hosts: {req.hosts}. Target {req.minutes*125} spoken words. Use only supplied facts, qualify uncertain claims. Return JSON object with segments array, each {{"speaker":host_name,"text":spoken_dialogue,"chapter":chapter_title}}. No markdown or production directions inside spoken text.'},{'role':'user','content':f'Outline:\n{outline}\nSources:\n{context}\nDirection:\n{req.editorial_direction}'}],dialogue_tokens)
+        mark('dialogue_complete',output_characters=len(script))
+        mark('parse_dialogue_start')
+        try:
+            data=json.loads(re.sub(r'^```(?:json)?\s*|\s*```$','',script.strip()))
+            if not isinstance(data.get('segments'),list) or not data['segments']:raise ValueError('No segments')
+            for s in data['segments']:
+                if s.get('speaker') not in req.hosts or not s.get('text'):raise ValueError('Invalid speaker or dialogue')
+        except Exception as exc:raise HTTPException(502,f'Nemotron returned invalid episode JSON: {exc}; raw excerpt {script[:300]}')
+        spoken_words=sum(len(seg['text'].split()) for seg in data['segments'])
+        mark('parse_dialogue_complete',segments=len(data['segments']),spoken_words=spoken_words)
+        if spoken_words<req.minutes*65:
+            raise HTTPException(502,f'Generated script too short: {spoken_words} words for {req.minutes} minutes. Try a shorter episode or larger model output limit.')
+        mark('persist_start')
+        rid=record('episodes',{'title':req.title,'outline':outline,'segments':data['segments'],'slots':Slot().model_dump(),'status':'script_ready','source_ids':req.source_ids,'word_count':spoken_words,'target_minutes':req.minutes})
+        mark('persist_complete',episode_id=rid)
+        return {'id':rid,'segments':len(data['segments']),'status':'script_ready'}
+    except Exception:
+        logger.exception('episode_request=%s stage=%s failed',request_id,stage)
+        raise
 
 @app.get('/episodes/{rid}')
 def episode(rid:str):return load('episodes',rid)
