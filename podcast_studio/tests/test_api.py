@@ -22,6 +22,23 @@ def test_image_ocr_reaches_source_context(monkeypatch):
     source=api.load('sources',r.json()['id'])
     assert 'LOCAL OCR' in source['text']
 
+def test_image_is_saved_when_tesseract_missing(monkeypatch):
+    from PIL import Image
+    image=Image.new('RGB',(32,32),'white');data=io.BytesIO();image.save(data,format='PNG')
+    monkeypatch.setattr(api,'extract_image_text',lambda img: (_ for _ in ()).throw(RuntimeError('Tesseract missing')))
+    r=client.post('/sources/upload',files={'file':('photo.png',data.getvalue(),'image/png')})
+    assert r.status_code==200 and r.json()['status']=='saved_without_text'
+    source=api.load('sources',r.json()['id'])
+    assert source['image'] is True and (Path(api.ROOT)/'sources'/r.json()['id']/'photo.png').exists()
+
+def test_episode_context_limits():
+    images=[api.record('sources',{'label':f'i{i}.png','text':'','kind':'image','image':True}) for i in range(11)]
+    response=client.post('/episodes',json={'title':'Too many images','source_ids':images})
+    assert response.status_code==413
+    documents=[api.record('sources',{'label':f'd{i}.pdf','text':'document','kind':'document'}) for i in range(51)]
+    response=client.post('/episodes',json={'title':'Too many documents','source_ids':documents})
+    assert response.status_code==413
+
 def test_sources_and_listing():
     r=client.post('/sources',json={'text':'Source grounded research material. '*10});assert r.status_code==200
     assert r.json()['id'] in [s['id'] for s in client.get('/sources').json()]

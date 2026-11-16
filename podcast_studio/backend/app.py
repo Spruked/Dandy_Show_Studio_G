@@ -167,7 +167,7 @@ async def add_source(source:Source):
     else:
         text=(source.text or '').strip();label='Pasted text'
     if len(text)<40:raise HTTPException(422,'Not enough source content')
-    rid=record('sources',{'label':label,'text':text})
+    rid=record('sources',{'label':label,'text':text,'kind':'website' if source.url else 'notes'})
     return {'id':rid,'label':label,'characters':len(text)}
 
 @app.post('/sources/upload')
@@ -197,20 +197,20 @@ async def upload_source(file:UploadFile=File(...)):
             if os.getenv('NVIDIA_API_KEY') and os.getenv('NEMOTRON_VISION_MODEL'):
                 mime='image/png' if ext=='.png' else 'image/bmp' if ext=='.bmp' else 'image/tiff' if ext in ('.tiff','.tif') else 'image/jpeg'
                 vision_text=await llm([{'role':'system','content':'Describe this image accurately for source-grounded podcast research. Focus on visual information beyond transcribed text. Distinguish observations from interpretation, do not invent.'},{'role':'user','content':[{'type':'text','text':'Describe the visual content of this image for a podcast production research library. Avoid repeating visible text unless needed for meaning.'},{'type':'image_url','image_url':{'url':f'data:{mime};base64,{base64.b64encode(raw).decode()}'}}]}],1200,model=os.getenv('NEMOTRON_VISION_MODEL'))
-            if not ocr_text and not vision_text:raise HTTPException(503,ocr_warning or 'Image contains no readable text and vision analysis is not configured')
             pieces=[]
             if ocr_text:pieces.append('LOCAL OCR (unverified transcription):\n'+ocr_text)
             if vision_text:pieces.append('VISION NOTES (unverified visual description):\n'+vision_text)
             combined='\n\n'.join(pieces)
-            rid=record('sources',{'label':name,'text':combined,'image':True,'status':'analyzed','ocr':ocr_text,'vision':vision_text,'ocr_warning':ocr_warning})
+            status='analyzed' if combined else 'saved_without_text'
+            rid=record('sources',{'label':name,'text':combined,'image':True,'kind':'image','status':status,'ocr':ocr_text,'vision':vision_text,'ocr_warning':ocr_warning})
             (ROOT/'sources'/rid/name).write_bytes(raw)
-            result={'id':rid,'label':name,'characters':len(combined),'status':'analyzed','ocr_characters':len(ocr_text),'vision_available':bool(vision_text)}
+            result={'id':rid,'label':name,'characters':len(combined),'status':status,'ocr_characters':len(ocr_text),'vision_available':bool(vision_text)}
             if ocr_warning:result['ocr_warning']=ocr_warning
             return result
         else:raise HTTPException(415,'Unsupported file type')
     except HTTPException:raise
     except Exception as exc:raise HTTPException(422,f'Could not parse file: {exc}')
-    rid=record('sources',{'label':name,'text':text[:150_000]})
+    rid=record('sources',{'label':name,'text':text[:150_000],'kind':'document'})
     return {'id':rid,'label':name,'characters':len(text)}
 
 SHOW_IDENTITY={
@@ -246,9 +246,12 @@ async def create_episode(req:Generate):
     try:
         mark('load_sources',source_count=len(req.source_ids))
         sources=[load('sources',x) for x in req.source_ids]
+        image_count=sum(1 for source in sources if source.get('kind')=='image' or source.get('image'))
+        document_count=sum(1 for source in sources if source.get('kind')=='document')
+        if image_count>10: raise HTTPException(413,'An episode can include at most 10 images in context')
+        if document_count>50: raise HTTPException(413,'An episode can include at most 50 documents in context')
         if not (os.getenv('NVIDIA_API_KEY') or '').strip(): raise HTTPException(503,'Set NVIDIA_API_KEY and NEMOTRON_MODEL')
-        if any(not x.get('text') for x in sources):raise HTTPException(422,'Image sources require a vision adapter before script generation')
-        context='\n\n'.join(f'SOURCE {i+1}: {x["label"]}\n{x["text"][:20000]}' for i,x in enumerate(sources))[:65000]
+        context='\n\n'.join(f'SOURCE {i+1}: {x["label"]}\n{x.get("text") or "[Image preserved, but no OCR or vision text is available. Do not infer visual details.]"}' for i,x in enumerate(sources))[:65000]
         dialogue_tokens=5000
         mark('dialogue_start',max_tokens=dialogue_tokens,reasoning_disabled=True,turns_per_host=req.turns_per_host)
         persona='; '.join(f"{k}: {v['persona']}" for k,v in SHOW_IDENTITY['hosts'].items())
