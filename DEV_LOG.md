@@ -24,3 +24,10 @@
 - Added exact alternating speaker/turn validation and an approval endpoint before VoiceStudio/FFmpeg production.
 - Added Episode Director controls for topic, turns per host, introduction style, and editorial direction in the Tauri UI.
 - Verification: backend tests 10 passed; frontend `npm run build` passed. No paid inference or audio production was started.
+
+## 2026-11-16 — Dandy Show music library
+
+- Added the five local MP3 variants under `podcast_studio/music/`.
+- Added read-only `/music` metadata and safe individual asset download endpoints.
+- Verified durations with ffprobe: 12.0s, 7.0s, 4.0s, 18.0s, and 29.977s.
+- Existing episode assembly was intentionally left unchanged; no production job was started.

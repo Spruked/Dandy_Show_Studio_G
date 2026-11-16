@@ -63,3 +63,7 @@ Security: the API binds to loopback, source URL ingestion blocks private address
 Studio G now separates the permanent Dandy Show identity from per-episode direction. The identity is versioned in the backend and defines The Dandy Show, Phil Dandy, Jim Dandy, source-grounded editorial independence, and uncertainty handling. Episode direction stores the topic, source IDs, turns per host (default 5), introduction style, and editorial direction with each generated episode.
 
 Script generation uses one Nemotron dialogue request with `chat_template_kwargs: {"enable_thinking": false}`. The response must be valid JSON with exactly alternating Phil/Jim segments and equal turn counts. Generated scripts are reviewed before production; production for new director episodes requires the script approval action, while legacy episodes remain compatible.
+
+## Dandy Show music library
+
+The local `music/` folder contains the permanent five-asset library: 12-second opener, 7-second return bumper, 4-second exit sting, unchanged 18-second master, and 30-second extended loop. The backend exposes metadata at `GET /music` and individual MP3s at `/music/{filename}`. The existing FFmpeg episode mix remains unchanged until transition placement and opener-under-voice mixing are explicitly enabled.

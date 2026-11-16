@@ -109,6 +109,26 @@ def probe_duration(path):
 def health():
     return {'ok':True,'ffmpeg':bool(shutil.which('ffmpeg')),'tesseract':ocr_status()['available'],'nemotron_configured':bool(os.getenv('NVIDIA_API_KEY')),'voicestudio_configured':bool(os.getenv('VOICESTUDIO_URL'))}
 
+@app.get('/music')
+def music_library():
+    """Return the permanent local Dandy Show music assets without starting production."""
+    specs={
+        'show_opener_12s.mp3':{'id':'signature_opener','label':'Signature opener','target_seconds':12,'purpose':'Opening of the show; may fade beneath Phil.'},
+        'return_bumper_7s.mp3':{'id':'return_bumper','label':'Return bumper','target_seconds':7,'purpose':'Return from advertisements.'},
+        'exit_sting_4s.mp3':{'id':'exit_sting','label':'Exit sting','target_seconds':4,'purpose':'Leaving a discussion act.'},
+        'signature_master_18s.mp3':{'id':'full_master','label':'Full master','target_seconds':18,'purpose':'Extended opening, closing, or special use.'},
+        'extended_repeat_30s.mp3':{'id':'extended_loop','label':'Extended loop','target_seconds':30,'purpose':'Longer transitions; repeat boundary requires listening review.'},
+    }
+    folder=Path(__file__).resolve().parents[1]/'music'
+    return [{**spec,'available':(folder/name).exists(),'filename':name} for name,spec in specs.items()]
+
+@app.get('/music/{filename}')
+def music_file(filename:str):
+    if Path(filename).name!=filename or not filename.endswith('.mp3'): raise HTTPException(400,'Invalid music filename')
+    path=Path(__file__).resolve().parents[1]/'music'/filename
+    if not path.exists(): raise HTTPException(404,'Music asset not found')
+    return FileResponse(path,media_type='audio/mpeg',filename=filename)
+
 @app.post('/sources')
 async def add_source(source:Source):
     if source.url:

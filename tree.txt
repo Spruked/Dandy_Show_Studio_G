@@ -31,6 +31,7 @@ podcast_ studio_G/
     |       `-- src/main.rs
     `-- tests/
         `-- test_api.py
+    |-- music/                  (permanent Dandy Show MP3 library: opener, bumper, sting, master, loop)
 
 Episode Director is implemented in backend/app.py and frontend/src/main.tsx; generated episodes and audio remain in %USERPROFILE%\PodcastStudio\ at runtime and are not part of this tree.
 
