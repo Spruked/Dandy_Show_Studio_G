@@ -1,5 +1,6 @@
 podcast_ studio_G/
 |-- HANDOFF.md
+|-- DEV_LOG.md
 |-- tree.txt
 |-- .gitignore
 `-- podcast_studio/
@@ -26,7 +27,10 @@ podcast_ studio_G/
     |       |-- Cargo.toml
     |       |-- build.rs
     |       |-- tauri.conf.json
-    |       |-- icons/icon.svg, icon.ico and generated sizes
+    |       |-- icons/ (Tauri icon assets)
     |       `-- src/main.rs
     `-- tests/
         `-- test_api.py
+
+Runtime data is intentionally outside the repository:
+`%USERPROFILE%\PodcastStudio\sources`, `episodes`, `voice_library`, and `logs`.
