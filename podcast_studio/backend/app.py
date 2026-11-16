@@ -47,6 +47,11 @@ class Slot(BaseModel):
     middle1:str|None=None
     middle2:str|None=None
     closing:str|None=None
+class MusicConfig(BaseModel):
+    enabled:bool=True
+    opener_id:str='signature_opener'
+    opener_mode:Literal['before','under_intro']='before'
+    closing_id:str='exit_sting'
 class VoiceConfig(BaseModel):
     base_url:str
     endpoint:str='/synthesize'
@@ -104,6 +109,15 @@ def probe_duration(path):
     p=subprocess.run(['ffprobe','-v','error','-show_entries','format=duration','-of','default=noprint_wrappers=1:nokey=1',str(path)],capture_output=True,text=True)
     if p.returncode:raise HTTPException(502,p.stderr)
     return float(p.stdout.strip())
+
+MUSIC_ASSETS={
+    'signature_opener':'show_opener_12s.mp3','return_bumper':'return_bumper_7s.mp3',
+    'exit_sting':'exit_sting_4s.mp3','full_master':'signature_master_18s.mp3','extended_loop':'extended_repeat_30s.mp3'}
+def music_path(asset_id):
+    if asset_id not in MUSIC_ASSETS: raise HTTPException(422,f'Unknown music asset: {asset_id}')
+    path=Path(__file__).resolve().parents[1]/'music'/MUSIC_ASSETS[asset_id]
+    if not path.exists(): raise HTTPException(503,f'Music asset is missing: {MUSIC_ASSETS[asset_id]}')
+    return path
 
 @app.get('/health')
 def health():
@@ -260,7 +274,7 @@ Topic: {req.topic or req.title}. Episode title: {req.title}. Direction: {req.edi
         if spoken_words<req.turns_per_host*12:
             raise HTTPException(502,f'Generated script too short: {spoken_words} words for {req.turns_per_host} turns per host.')
         mark('persist_start')
-        rid=record('episodes',{'title':req.title,'outline':'Episode Director generated the dialogue directly from the supplied sources.','segments':data['segments'],'slots':Slot().model_dump(),'status':'script_ready','source_ids':req.source_ids,'word_count':spoken_words,'target_minutes':req.minutes,'director':{'show_identity':SHOW_IDENTITY,'topic':req.topic or req.title,'turns_per_host':req.turns_per_host,'introduction_style':req.introduction_style,'editorial_direction':req.editorial_direction,'script_approved':False,'reasoning_disabled':True,'model':os.getenv('NEMOTRON_MODEL') or DEFAULT_NEMOTRON_MODEL}})
+        rid=record('episodes',{'title':req.title,'outline':'Episode Director generated the dialogue directly from the supplied sources.','segments':data['segments'],'slots':Slot().model_dump(),'music':MusicConfig().model_dump(),'status':'script_ready','source_ids':req.source_ids,'word_count':spoken_words,'target_minutes':req.minutes,'director':{'show_identity':SHOW_IDENTITY,'topic':req.topic or req.title,'turns_per_host':req.turns_per_host,'introduction_style':req.introduction_style,'editorial_direction':req.editorial_direction,'script_approved':False,'reasoning_disabled':True,'model':os.getenv('NEMOTRON_MODEL') or DEFAULT_NEMOTRON_MODEL}})
         mark('persist_complete',episode_id=rid)
         return {'id':rid,'segments':len(data['segments']),'status':'script_ready'}
     except Exception:
@@ -323,6 +337,14 @@ def update_slots(rid:str,slots:Slot):
         if aid:load('ads',aid)
     ep['slots']=slots.model_dump();save('episodes',rid,ep)
     return {'ok':True,'slots':ep['slots']}
+
+@app.put('/episodes/{rid}/music')
+def update_music(rid:str,music:MusicConfig):
+    ep=load('episodes',rid)
+    if music.enabled:
+        music_path(music.opener_id); music_path(music.closing_id)
+    ep['music']=music.model_dump(); save('episodes',rid,ep)
+    return {'ok':True,'music':ep['music']}
 
 async def synth(text,voice,dest):
     """VoiceStudio HTTP adapter. Supports direct audio bytes, JSON base64 and audio URL.
@@ -409,6 +431,18 @@ def mix_episode(rid:str):
         if not ad.exists():raise HTTPException(409,f'Render ad {aid} before mixing')
         normalized=folder/'ad_closing.mp3';ffmpeg('-i',ad,'-ar','44100','-ac','2','-codec:a','libmp3lame','-b:a','192k',normalized)
         plan.append(normalized)
+    music=ep.get('music') or {'enabled':False}
+    if music.get('enabled'):
+        opener=music_path(music.get('opener_id','signature_opener'))
+        closing_music=music_path(music.get('closing_id','exit_sting'))
+        if music.get('opener_mode','before')=='under_intro':
+            # Mix a quiet, four-second fade under the first host clip; dialogue is never truncated.
+            under=folder/'music_under_intro.mp3'
+            ffmpeg('-i',opener,'-i',clips[0],'-filter_complex','[0:a]volume=0.22,afade=t=out:st=8:d=4[m];[m][1:a]amix=inputs=2:duration=longest:dropout_transition=2[a]','-map','[a]','-ar','44100','-ac','2','-codec:a','libmp3lame','-b:a','192k',under)
+            plan=[under if p==clips[0] else p for p in plan]
+        else:
+            opening=folder/'music_opening.mp3';ffmpeg('-i',opener,'-af','afade=t=out:st=8:d=4','-ar','44100','-ac','2','-codec:a','libmp3lame','-b:a','192k',opening);plan.insert(0,opening)
+        ending=folder/'music_closing.mp3';ffmpeg('-i',closing_music,'-af','afade=t=out:st=0:d=4','-ar','44100','-ac','2','-codec:a','libmp3lame','-b:a','192k',ending);plan.append(ending)
     listing=folder/'concat.txt'
     listing.write_text(''.join("file '"+str(p).replace("'","'\\''")+"'\n" for p in plan))
     final=folder/'episode.mp3';ffmpeg('-f','concat','-safe','0','-i',listing,'-c:a','libmp3lame','-b:a','192k',final)

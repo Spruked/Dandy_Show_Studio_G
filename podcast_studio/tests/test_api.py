@@ -75,3 +75,16 @@ def test_service_status_safe():
 def test_production_rejects_missing_episode():
     missing='00000000-0000-0000-0000-000000000000'
     assert client.post(f'/episodes/{missing}/produce',json={'with_social':True}).status_code==404
+
+def test_music_library_and_episode_metadata():
+    library=client.get('/music')
+    assert library.status_code==200
+    assets={item['id']:item for item in library.json()}
+    assert assets['signature_opener']['target_seconds']==12
+    assert client.get('/music/show_opener_12s.mp3').status_code==200
+    source=client.post('/sources',json={'text':'Music integration fixture source content. '*10}).json()['id']
+    episode_id=api.record('episodes',{'title':'Music fixture','segments':[],'slots':{},'status':'script_ready'})
+    result=client.put('/episodes/'+episode_id+'/music',json={'enabled':True,'opener_id':'signature_opener','opener_mode':'under_intro','closing_id':'exit_sting'})
+    assert result.status_code==200 and result.json()['music']['opener_mode']=='under_intro'
+    assert api.load('episodes',episode_id)['music']['closing_id']=='exit_sting'
+    assert source
