@@ -15,6 +15,9 @@ podcast_ studio_G/
     |   |-- package.json
     |   |-- package-lock.json
     |   |-- tsconfig.json
+    |   |-- dist/                  (generated production build)
+    |   |   |-- index.html
+    |   |   `-- assets/
     |   |-- src/
     |   |   |-- main.tsx
     |   |   `-- style.css

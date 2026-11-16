@@ -21,16 +21,28 @@ A native Tauri 2 / Rust / React interface backed by local FastAPI, NVIDIA Nemotr
 4. Start VoiceStudio at `http://127.0.0.1:3900`. Its actual model and request payload may differ from the default OpenAI-compatible speech format in `.env.example`; update `VOICESTUDIO_PAYLOAD_JSON` to match the service.
 5. Run `./start-windows.ps1` to start FastAPI and launch the Tauri desktop window.
 
+### Local development fallback
+
+If Rust/Cargo is not installed, start the services separately:
+
+```powershell
+.\.venv\Scripts\python.exe -m uvicorn app:app --app-dir backend --host 127.0.0.1 --port 8765
+cd frontend
+npm run dev -- --host 127.0.0.1
+```
+
+Then open `http://127.0.0.1:5173`; the API is available at `http://127.0.0.1:8765`. The native Tauri window requires Cargo and the Windows desktop toolchain.
+
 ## VoiceStudio handoff
 
 Samples are stored under `%USERPROFILE%/PodcastStudio/voice_library/samples/` by default. `voice_library/voices.json` persists host assignments and VoiceStudio voice IDs. `GET /voices/{id}/handoff` provides the absolute sample path and its local URL. Once VoiceStudio registers a voice, set its returned ID in the Voice Library UI. This is deliberately an explicit handoff, not a claim of automatic voice cloning.
 
 ## Verification and limitations
 
-Backend tests: `python -m pytest -q tests`.
+Backend tests: `python -m pytest -q tests` (currently 9 passing).
 Frontend build: `cd frontend && npm install && npm run build`.
 Tauri desktop build: `cd frontend && npm run tauri build` (requires Windows desktop toolchain).
 
-**Do not call this production-ready until a live Nemotron → VoiceStudio → FFmpeg → MP3 → MP4 run has been completed and listened to.** The NVIDIA key and VoiceStudio services are not available in this build environment. A browser/Vite preview is optional for development only. Current video uses branded static artwork; it is not a fully animated visual editor. The generated SRT is approximate dialogue timing and does not account for inserted commercial offsets. Audio quality, voice cloning, and factual accuracy need review before publication.
+**Do not call this production-ready until a live Nemotron → VoiceStudio → FFmpeg → MP3 → MP4 run has been completed and listened to.** The current machine has `pytesseract` in the project virtual environment, but the separate Windows `tesseract.exe` executable is not installed/on PATH; OCR uploads will report that requirement until it is installed. NVIDIA inference remains blocked by the account deployment entitlement documented in `HANDOFF.md`. Current video uses branded static artwork; it is not a fully animated visual editor. The generated SRT is approximate dialogue timing and does not account for inserted commercial offsets. Audio quality, voice cloning, and factual accuracy need review before publication.
 
 Security: the API binds to loopback, source URL ingestion blocks private addresses, and credentials stay server-side. For use beyond a trusted local desktop, add authentication, robust DNS-rebinding defenses, upload scanning and resource limits.
