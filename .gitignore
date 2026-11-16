@@ -6,6 +6,7 @@ venv/
 node_modules/
 dist/
 target/
+podcast_studio/frontend/src-tauri/gen/
 __pycache__/
 *.py[cod]
 .pytest_cache/
