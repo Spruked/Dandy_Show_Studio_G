@@ -1,6 +1,8 @@
 $ErrorActionPreference='Stop'
 Set-Location $PSScriptRoot
 if (-not (Test-Path '.venv\Scripts\python.exe')) { throw 'Run setup-windows.ps1 first.' }
+$cargoBin=Join-Path $env:USERPROFILE '.cargo\bin'
+if (Test-Path $cargoBin) { $env:Path="$cargoBin;$env:Path" }
 if (Test-Path '.env') {
   Get-Content '.env' | ForEach-Object {
     if ($_ -match '^\s*([A-Za-z_][A-Za-z_0-9]*)=(.*)$') {
