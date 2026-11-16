@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from fastapi.middleware.cors import CORSMiddleware
 
 ROOT=Path(os.environ.get('PODCAST_STUDIO_DATA',str(Path.home()/'PodcastStudio')))
+DEFAULT_NEMOTRON_MODEL='nvidia/nemotron-3-nano-omni-30b-a3b-reasoning'
 ROOT.mkdir(parents=True,exist_ok=True)
 app=FastAPI(title='Podcast Studio',version='0.3')
 app.add_middleware(CORSMiddleware,allow_origins=['http://127.0.0.1:5173','http://localhost:5173','tauri://localhost','http://tauri.localhost'],allow_methods=['*'],allow_headers=['*'])
@@ -169,7 +170,7 @@ async def upload_source(file:UploadFile=File(...)):
     return {'id':rid,'label':name,'characters':len(text)}
 
 async def llm(messages,max_tokens=5000,model=None):
-    key=(os.getenv('NVIDIA_API_KEY') or '').strip();model=(model or os.getenv('NEMOTRON_MODEL') or '').strip()
+    key=(os.getenv('NVIDIA_API_KEY') or '').strip();model=(model or os.getenv('NEMOTRON_MODEL') or DEFAULT_NEMOTRON_MODEL).strip()
     if not key or not model:raise HTTPException(503,'Set NVIDIA_API_KEY and NEMOTRON_MODEL')
     async with httpx.AsyncClient(timeout=180) as client:
         r=await client.post(os.getenv('NVIDIA_BASE_URL','https://integrate.api.nvidia.com/v1').rstrip('/')+'/chat/completions',headers={'Authorization':f'Bearer {key}'},json={'model':model,'messages':messages,'max_tokens':max_tokens,'temperature':0.6})
@@ -562,7 +563,7 @@ async def service_status():
                 results[key]={'reachable':True,'http_status':r.status_code,'url':url}
         except httpx.HTTPError:results[key]={'reachable':False,'url':url}
     results['nemotron_key_present']=bool(os.getenv('NVIDIA_API_KEY'))
-    results['nemotron_model_present']=bool(os.getenv('NEMOTRON_MODEL'))
+    results['nemotron_model_present']=bool(os.getenv('NEMOTRON_MODEL') or DEFAULT_NEMOTRON_MODEL)
     results['ffmpeg']=bool(shutil.which('ffmpeg'))
     return results
 
