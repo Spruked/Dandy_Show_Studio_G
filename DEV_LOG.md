@@ -17,3 +17,10 @@
 - The hosted endpoint returned empty dialogue content with `finish_reason=length` for the production reasoning request. G now logs the stage and returns HTTP 502 instead of HTTP 500.
 - Windows Tesseract executable is still not installed/on PATH; `pytesseract` alone is insufficient.
 - VoiceStudio STT is not implemented; VoiceStudio TTS is integrated and verified.
+## 2026-11-16 — Permanent Episode Director
+
+- Added versioned Dandy Show identity and persistent episode direction fields.
+- Replaced the new episode path's separate outline/dialogue sequence with one reasoning-disabled Nemotron dialogue request.
+- Added exact alternating speaker/turn validation and an approval endpoint before VoiceStudio/FFmpeg production.
+- Added Episode Director controls for topic, turns per host, introduction style, and editorial direction in the Tauri UI.
+- Verification: backend tests 10 passed; frontend `npm run build` passed. No paid inference or audio production was started.

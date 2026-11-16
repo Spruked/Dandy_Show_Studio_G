@@ -7,6 +7,7 @@ from bs4 import BeautifulSoup
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
+from typing import Literal
 from fastapi.middleware.cors import CORSMiddleware
 
 ROOT=Path(os.environ.get('PODCAST_STUDIO_DATA',str(Path.home()/'PodcastStudio')))
@@ -30,6 +31,9 @@ class Generate(BaseModel):
     minutes:int=Field(default=15,ge=2,le=60)
     hosts:list[str]=Field(default_factory=lambda:['Phil','Jim'])
     editorial_direction:str='Investigative, conversational, compelling; distinct host perspectives; source-grounded.'
+    topic:str=''
+    turns_per_host:int=Field(default=5,ge=3,le=12)
+    introduction_style:Literal['varied','brief','none']='varied'
 class Ad(BaseModel):
     name:str
     copy:str
@@ -175,11 +179,22 @@ async def upload_source(file:UploadFile=File(...)):
     rid=record('sources',{'label':name,'text':text[:150_000]})
     return {'id':rid,'label':name,'characters':len(text)}
 
-async def llm(messages,max_tokens=5000,model=None):
+SHOW_IDENTITY={
+    'name':'The Dandy Show','version':'1.0',
+    'hosts':{
+        'Phil':{'name':'Phil Dandy','persona':'curious, incisive, energetic host who tests claims and asks precise questions.'},
+        'Jim':{'name':'Jim Dandy','persona':'wry, thoughtful co-host who adds context, challenges assumptions, and reaches independent conclusions.'}
+    },
+    'editorial_principles':['Use only supplied source facts unless clearly labeled as uncertainty.','Hosts may praise, criticize, disagree, or remain uncertain.','Never manufacture missing details.']
+}
+
+async def llm(messages,max_tokens=5000,model=None,chat_template_kwargs=None):
     key=(os.getenv('NVIDIA_API_KEY') or '').strip();model=(model or os.getenv('NEMOTRON_MODEL') or DEFAULT_NEMOTRON_MODEL).strip()
     if not key or not model:raise HTTPException(503,'Set NVIDIA_API_KEY and NEMOTRON_MODEL')
     async with httpx.AsyncClient(timeout=180) as client:
-        r=await client.post(os.getenv('NVIDIA_BASE_URL','https://integrate.api.nvidia.com/v1').rstrip('/')+'/chat/completions',headers={'Authorization':f'Bearer {key}'},json={'model':model,'messages':messages,'max_tokens':max_tokens,'temperature':0.6})
+        payload={'model':model,'messages':messages,'max_tokens':max_tokens,'temperature':0.6}
+        if chat_template_kwargs is not None:payload['chat_template_kwargs']=chat_template_kwargs
+        r=await client.post(os.getenv('NVIDIA_BASE_URL','https://integrate.api.nvidia.com/v1').rstrip('/')+'/chat/completions',headers={'Authorization':f'Bearer {key}'},json=payload)
         if r.status_code>=400:raise HTTPException(502,f'Nemotron error {r.status_code}: {r.text[:500]}')
         payload=r.json();choice=(payload.get('choices') or [{}])[0];message=choice.get('message') or {};content=message.get('content')
         logger.info('nemotron_response status=%s finish_reason=%s has_content=%s response_keys=%s',r.status_code,choice.get('finish_reason'),bool(content),sorted(payload.keys()))
@@ -197,28 +212,35 @@ async def create_episode(req:Generate):
     try:
         mark('load_sources',source_count=len(req.source_ids))
         sources=[load('sources',x) for x in req.source_ids]
+        if not (os.getenv('NVIDIA_API_KEY') or '').strip(): raise HTTPException(503,'Set NVIDIA_API_KEY and NEMOTRON_MODEL')
         if any(not x.get('text') for x in sources):raise HTTPException(422,'Image sources require a vision adapter before script generation')
         context='\n\n'.join(f'SOURCE {i+1}: {x["label"]}\n{x["text"][:20000]}' for i,x in enumerate(sources))[:65000]
-        mark('outline_start',context_characters=len(context),model=os.getenv('NEMOTRON_MODEL') or DEFAULT_NEMOTRON_MODEL)
-        outline=await llm([{'role':'system','content':'You are an expert investigative podcast producer. Plan a compelling multi-chapter episode grounded only in provided sources. Include tension, critical questions, clear narrative arc, and fact-check cautions. Return JSON object with chapters array of {title,goal,beats}, no markdown.'},{'role':'user','content':f'Title: {req.title}; duration {req.minutes} minutes; hosts {req.hosts}; direction {req.editorial_direction}\n{context}'}],3500)
-        mark('outline_complete',output_characters=len(outline))
-        dialogue_tokens=max(5000,min(14000,req.minutes*550))
-        mark('dialogue_start',max_tokens=dialogue_tokens)
-        script=await llm([{'role':'system','content':f'Write a finished two-host podcast dialogue, with distinct recurring personalities and natural objections, interruptions, callbacks and transitions. Hosts: {req.hosts}. Target {req.minutes*125} spoken words. Use only supplied facts, qualify uncertain claims. Return JSON object with segments array, each {{"speaker":host_name,"text":spoken_dialogue,"chapter":chapter_title}}. No markdown or production directions inside spoken text.'},{'role':'user','content':f'Outline:\n{outline}\nSources:\n{context}\nDirection:\n{req.editorial_direction}'}],dialogue_tokens)
+        dialogue_tokens=5000
+        mark('dialogue_start',max_tokens=dialogue_tokens,reasoning_disabled=True,turns_per_host=req.turns_per_host)
+        persona='; '.join(f"{k}: {v['persona']}" for k,v in SHOW_IDENTITY['hosts'].items())
+        intro={'varied':'Open naturally with a brief, varied welcome that establishes the show, hosts, and topic within the first two turns.','brief':'Use one brief natural welcome in the first turn.','none':'Begin directly with the source discussion; do not add a formal welcome.'}[req.introduction_style]
+        prompt=f'''You are the permanent Episode Director for {SHOW_IDENTITY['name']}. Generate exactly {req.turns_per_host*2} spoken dialogue segments: alternate Phil, Jim, Phil, Jim, with exactly {req.turns_per_host} turns per host. One line per segment, no combined speakers. {intro}
+Show identity: {SHOW_IDENTITY['name']}; {persona}. Editorial principles: {'; '.join(SHOW_IDENTITY['editorial_principles'])}
+Topic: {req.topic or req.title}. Episode title: {req.title}. Direction: {req.editorial_direction}. Use only the supplied source context and explicitly qualify uncertainty. Independent editorial judgment is required; disagreement is allowed.
+        Return only valid JSON: {{"segments":[{{"speaker":"Phil" or "Jim","text":"spoken line","chapter":"topic"}}]}}. No markdown, narration, or production directions.'''
+        script=await llm([{'role':'system','content':prompt},{'role':'user','content':f'SOURCE CONTEXT:\n{context}'}],dialogue_tokens,chat_template_kwargs={'enable_thinking':False})
         mark('dialogue_complete',output_characters=len(script))
         mark('parse_dialogue_start')
         try:
             data=json.loads(re.sub(r'^```(?:json)?\s*|\s*```$','',script.strip()))
             if not isinstance(data.get('segments'),list) or not data['segments']:raise ValueError('No segments')
-            for s in data['segments']:
+            expected=[req.hosts[i%2] for i in range(req.turns_per_host*2)]
+            if len(data['segments'])!=len(expected):raise ValueError(f'Expected exactly {len(expected)} segments')
+            for i,s in enumerate(data['segments']):
                 if s.get('speaker') not in req.hosts or not s.get('text'):raise ValueError('Invalid speaker or dialogue')
+                if s.get('speaker')!=expected[i]:raise ValueError('Speakers must alternate Phil and Jim')
         except Exception as exc:raise HTTPException(502,f'Nemotron returned invalid episode JSON: {exc}; raw excerpt {script[:300]}')
         spoken_words=sum(len(seg['text'].split()) for seg in data['segments'])
         mark('parse_dialogue_complete',segments=len(data['segments']),spoken_words=spoken_words)
-        if spoken_words<req.minutes*65:
-            raise HTTPException(502,f'Generated script too short: {spoken_words} words for {req.minutes} minutes. Try a shorter episode or larger model output limit.')
+        if spoken_words<req.turns_per_host*12:
+            raise HTTPException(502,f'Generated script too short: {spoken_words} words for {req.turns_per_host} turns per host.')
         mark('persist_start')
-        rid=record('episodes',{'title':req.title,'outline':outline,'segments':data['segments'],'slots':Slot().model_dump(),'status':'script_ready','source_ids':req.source_ids,'word_count':spoken_words,'target_minutes':req.minutes})
+        rid=record('episodes',{'title':req.title,'outline':'Episode Director generated the dialogue directly from the supplied sources.','segments':data['segments'],'slots':Slot().model_dump(),'status':'script_ready','source_ids':req.source_ids,'word_count':spoken_words,'target_minutes':req.minutes,'director':{'show_identity':SHOW_IDENTITY,'topic':req.topic or req.title,'turns_per_host':req.turns_per_host,'introduction_style':req.introduction_style,'editorial_direction':req.editorial_direction,'script_approved':False,'reasoning_disabled':True,'model':os.getenv('NEMOTRON_MODEL') or DEFAULT_NEMOTRON_MODEL}})
         mark('persist_complete',episode_id=rid)
         return {'id':rid,'segments':len(data['segments']),'status':'script_ready'}
     except Exception:
@@ -227,6 +249,13 @@ async def create_episode(req:Generate):
 
 @app.get('/episodes/{rid}')
 def episode(rid:str):return load('episodes',rid)
+
+@app.post('/episodes/{rid}/approve')
+def approve_episode(rid:str):
+    ep=load('episodes',rid)
+    if 'director' not in ep: raise HTTPException(409,'Episode has no Episode Director record')
+    ep['director']['script_approved']=True; ep['status']='script_approved'; save('episodes',rid,ep)
+    return {'id':rid,'status':ep['status'],'script_approved':True}
 
 @app.post('/ads')
 def create_ad(ad:Ad):
@@ -614,7 +643,9 @@ class ProductionRequest(BaseModel):
 
 @app.post('/episodes/{rid}/produce')
 async def produce_episode(rid:str,req:ProductionRequest,background_tasks:BackgroundTasks):
-    load('episodes',rid)
+    ep=load('episodes',rid)
+    if 'director' in ep and not ep['director'].get('script_approved'):
+        raise HTTPException(409,'Approve the generated script before production')
     job_id=str(uuid.uuid4());JOBS[job_id]={'id':job_id,'episode_id':rid,'status':'running','stage':'Queued','progress':0}
     background_tasks.add_task(production_job,job_id,rid,req.with_social)
     return JOBS[job_id]
