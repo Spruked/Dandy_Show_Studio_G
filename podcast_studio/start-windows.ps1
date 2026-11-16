@@ -8,6 +8,9 @@ if (Test-Path '.env') {
     }
   }
 }
+if (-not $env:NEMOTRON_MODEL) {
+  $env:NEMOTRON_MODEL='nvidia/nemotron-3-nano-omni-30b-a3b-reasoning'
+}
 $server = Start-Process -FilePath (Resolve-Path '.venv\Scripts\python.exe') -ArgumentList '-m','uvicorn','app:app','--app-dir','backend','--host','127.0.0.1','--port','8765' -PassThru -NoNewWindow
 try {
   Start-Sleep -Seconds 2
